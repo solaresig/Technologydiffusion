@@ -5,7 +5,8 @@ library(stringi)
 library(geodist)
 library(stargazer)
 library(car)
-setwd(dirname(rstudioapi::getSourceEditorContext()$path)) # requires RStudio interactive session; replace with setwd("path/to/script") for command-line use
+library(geodist)
+setwd(dirname(rstudioapi::getSourceEditorContext()$path)) 
 #### Functions ####
 coords2country <- function(df){  
   ll<-subset(df, select=c("lon", "lat"))
@@ -439,14 +440,15 @@ for(i in 1:nrow(firmscy)){
 cyanexp<-together %>% 
   left_join(cyan, relationship = "many-to-many") %>% 
   subset(!is.na(technology)&str_detect(technology, "cyan"), 
-         select=c(year, company, simpname, firstname)) %>% distinct() %>%
+         select=c(year, company, simpname, firstname, lon, lat)) %>% distinct() %>%
   mutate(exp=1) #
 acumulado<-data.frame()
 years<-unique(cyanexp$year) %>% sort()
 years<-years[2:length(years)]
 for(y in years){
   # get people with experience before year y
-  temp<-cyanexp %>% subset(year<y, select=-c(year, company)) %>% rename(firstname0=firstname)
+  temp<-cyanexp %>% subset(year<y, select=-c(year, company)) %>% 
+    rename(firstname0=firstname, lon0=lon, lat0=lat) %>% distinct()
   tempi<-subset(together, year==y) 
   # match current employees with experienced workers
   tempo<-left_join(tempi, temp, by=c("simpname"), relationship = "many-to-many")  %>%
@@ -465,11 +467,28 @@ acumulado<-acumulado %>%
          nexpuni=ifelse(alumni==1&is.na(exp), 1, 0), 
          nexpassoc=ifelse(professional==1&is.na(exp), 1, 0), 
          nexpprof=ifelse(profalum==1&is.na(exp), 1, 0))
+acumulado$distexp<-NA
+for(i in 1:nrow(acumulado)){
+  if(!is.na(acumulado$lon0[i])&!is.na(acumulado$lon[i])){
+    geod0<-data.frame(lon=acumulado$lon0[i], lat=acumulado$lat0[i])
+    geod1<-data.frame(lon=acumulado$lon[i], lat=acumulado$lat[i])
+    vector1<-geodist(geod0, geod1, measure="geodesic")
+    acumulado$distexp[i]<-min(vector1, na.rm=T)
+  } else{
+    acumulado$distexp[i]<-NA
+  }
+}
+
 experience<-acumulado %>% group_by(year, company) %>% 
   summarize(exp=sum(exp,na.rm=T), expuni=sum(expuni,na.rm=T), expassoc=sum(expassoc,na.rm=T), expprof=sum(expprof,na.rm=T),
             nexpuni=sum(nexpuni,na.rm=T), nexpassoc=sum(nexpassoc,na.rm=T), nexpprof=sum(nexpprof,na.rm=T),
+            distexp=mean(distexp, na.rm=T),
             .groups='keep')
+experience$distexp[which(is.nan(experience$distexp))]<-NA
+experience$expdistrict<-ifelse(experience$distexp<=65, 1, 0)
 firmscy<-firmscy %>%  left_join(experience)
+tablacy<-firmscy %>% subset(!is.na(distexp))
+mean(tablacy$distexp, na.rm=T)
 
 ###### 3.2.3 Networks ######
 #all the networks created until that year#
@@ -585,7 +604,7 @@ firmsfl<-firms %>% subset((technology=="gravity"|technology=="flotation")&!is.na
                           select=c(year, company, loc, lon, lat, country, capital, technology, mult, n))
 firmsfl$dist<-NA
 for(i in 1:nrow(firmsfl)){
-  if(firmsfl$year[i]>1893){
+  if(firmsfl$year[i]>1903){
     temp1<-firmsfl[which((firmsfl$year<firmsfl$year[i])&(firmsfl$technology=="flotation")),]
     tempi<-data.frame(lon=firmsfl$lon[i], lat=firmsfl$lat[i])
     vector1<-geodist(tempi, temp1, measure="geodesic")
@@ -602,16 +621,17 @@ firmsfl$country<-ifelse(is.na(firmsfl$country)&str_detect(firmsfl$loc, "zealand"
 flotexp<-together %>% 
   left_join(flot, relationship = "many-to-many") %>% 
   subset(!is.na(technology)&str_detect(technology, "flot"), 
-         select=c(year, company, simpname, firstname)) %>% distinct() %>%
-  mutate(exp=1) %>% left_join(profst, relationship = "many-to-many") %>%
-  mutate(dum=comparecolumns(firstname, firstname0)) %>%
-  subset(dum==TRUE, select=-c(dum, firstname, company)) %>% distinct()
+         select=c(year, company, simpname, firstname, lon, lat)) %>% distinct() %>%
+  mutate(exp=1) 
 acumulado<-data.frame()
 years<-unique(flotexp$year) %>% sort()
 years<-years[2:length(years)]
 for(y in years){
-  temp<-flotexp %>% subset(year<y, select=-c(year)) 
+  # get people with experience before year y
+  temp<-flotexp %>% subset(year<y, select=-c(year, company)) %>% 
+    rename(firstname0=firstname, lon0=lon, lat0=lat) %>% distinct()
   tempi<-subset(together, year==y) 
+  # match current employees with experienced workers
   tempo<-left_join(tempi, temp, by=c("simpname"), relationship = "many-to-many")  %>%
     mutate(dum=comparecolumns(firstname, firstname0)) %>%
     subset(dum==TRUE, select=-c(dum, firstname0)) %>% 
@@ -621,9 +641,32 @@ for(y in years){
 acumulado<-acumulado %>% left_join(profst, by=c("simpname"), relationship = "many-to-many") %>% 
   mutate(dum=comparecolumns(firstname, firstname0)) %>% 
   subset(dum==TRUE, select=-firstname0)
+acumulado<-acumulado %>%
+  mutate(expuni=ifelse(alumni==1&exp==1, 1, 0), #creatred these crossed variables but did not find any significance and did not use them
+         expassoc=ifelse(professional==1&exp==1, 1, 0),
+         expprof=ifelse(profalum==1&exp==1, 1, 0),
+         nexpuni=ifelse(alumni==1&is.na(exp), 1, 0), 
+         nexpassoc=ifelse(professional==1&is.na(exp), 1, 0), 
+         nexpprof=ifelse(profalum==1&is.na(exp), 1, 0))
+acumulado$distexp<-NA
+for(i in 1:nrow(acumulado)){
+  if(!is.na(acumulado$lon0[i])&!is.na(acumulado$lon[i])){
+    geod0<-data.frame(lon=acumulado$lon0[i], lat=acumulado$lat0[i])
+    geod1<-data.frame(lon=acumulado$lon[i], lat=acumulado$lat[i])
+    vector1<-geodist(geod0, geod1, measure="geodesic")
+    acumulado$distexp[i]<-min(vector1, na.rm=T)
+  } else{
+    acumulado$distexp[i]<-NA
+  }
+}
+
 experience<-acumulado %>% group_by(year, company) %>% 
-  summarize(exp=sum(exp,na.rm=T),
+  summarize(exp=sum(exp,na.rm=T), expuni=sum(expuni,na.rm=T), expassoc=sum(expassoc,na.rm=T), expprof=sum(expprof,na.rm=T),
+            nexpuni=sum(nexpuni,na.rm=T), nexpassoc=sum(nexpassoc,na.rm=T), nexpprof=sum(nexpprof,na.rm=T),
+            distexp=mean(distexp, na.rm=T),
             .groups='keep')
+experience$distexp[which(is.nan(experience$distexp))]<-NA
+experience$expdistrict<-ifelse(experience$distexp<=65, 1, 0)
 firmsfl<-firmsfl %>%  left_join(experience)
 
 ###### 3.3.3 Networks ######
